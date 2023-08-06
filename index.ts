@@ -52,19 +52,29 @@ const REPEATED_BUNDLE_SUBMISSIONS = 3;
       // blocks will not succeed even if your solution is correct. Bundles should be
       // submitted repeatedly, for sequential blocks, until they land on-chain.
 
-      const targetBlock = await provider.getBlockNumber();
-
       const request = await contract['claimReward'].populateTransaction();
 
+      // Batch send bundles. Originally we sent a single bundle and that never
+      // seems to land. It's likely that we're sending bad parameters in our
+      // bundles but instead of investigating that we're just gonna send more
+      // bad transactions.
+      // TODO: skill issue. like boxing in the dark. I have no idea here.
+      // TODO: extract `populateTransaction` and `bundleParams` helpers.
       const sendBundle = async (): Promise<string[]> => {
 
         const bundles = [];
 
         for (let i = 0; i < REPEATED_BUNDLE_SUBMISSIONS; i++) {
+          const targetBlock = await provider.getBlockNumber();
 
+          // Using `ethers#Contract` reference to populate transaction devices
+          // the `to` and `data` portions of the `TransactionRequest` so we need
+          // to populate it with the rest of the parameters ourselves.
+          // TODO: `new NonceManager().populateTransaction()` blows up.
           const claimRewardRequest: TransactionRequest = {
             ...request,
             type: 2,
+            // TODO: there has to be a better way to do this
             nonce: await signer.getNonce() + i,
             chainId: provider._network.chainId,
             value: 0,
@@ -73,6 +83,7 @@ const REPEATED_BUNDLE_SUBMISSIONS = 3;
             maxPriorityFeePerGas: BigInt(5),
           }
 
+          // Set bundle parameters and sign transaction
           const params: BundleParams = {
             body: [
               { hash: pendingTx.hash },
@@ -99,6 +110,8 @@ const REPEATED_BUNDLE_SUBMISSIONS = 3;
       }
 
       // watch future blocks to see if target transaction has ever makes it to the ledger.
+      const targetBlock = await provider.getBlockNumber();
+
       for (let i = 0; i < NUM_TARGET_BLOCKS; i++) {
 
         const current = targetBlock + i;
@@ -116,7 +129,7 @@ const REPEATED_BUNDLE_SUBMISSIONS = 3;
 
         // stall until target block is available
         while (await provider.getBlockNumber() < current) {
-          await new Promise(resolve => setTimeout(resolve, 3_000))
+          await new Promise(resolve => setTimeout(resolve, 6_000))
         }
 
         // check for receipts to bundles and original transaction hash
@@ -141,13 +154,15 @@ const REPEATED_BUNDLE_SUBMISSIONS = 3;
         if (succeeded.length) {
           const msg = succeeded
             .map(({ hash }: TransactionReceipt): string => `found: https://goerli.etherscan.io/tx/${hash}\n`)
-            .join('\n')
+            .join('\n');
 
           console.log(msg);
 
+          console.log(receipts);
+
           lock.release();
 
-          // in any case the opportunity attached to this transaction has no longer exists; bail.
+          // in any case the opportunity attached to this transaction is no longer available; bail.
           break;
 
         } else {
@@ -161,8 +176,6 @@ const REPEATED_BUNDLE_SUBMISSIONS = 3;
       await pendingTxHashes.filter(hash => hash !== pendingTx.hash);
 
       console.log(`${pendingTx.hash} dropped\n`);
-
-      lock.release();
 
     });
 

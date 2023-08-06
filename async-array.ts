@@ -1,57 +1,56 @@
-import { Mutex } from 'async-mutex'
+import { Mutex } from 'async-mutex';
 
 // async mutex-guarded variable
 export class AsyncVar<T> {
-  private mutex: Mutex
+  private mutex: Mutex;
 
   constructor(private value: T) {
-      this.mutex = new Mutex()
+    this.mutex = new Mutex();
   }
 
   public async get(): Promise<T> {
-      const release = await this.mutex.acquire()
-      const value = this.value
-      release()
-      return value
+    const release = await this.mutex.acquire();
+    const value = this.value;
+    release();
+    return value;
   }
 
   public async set(value: T): Promise<void> {
-      const release = await this.mutex.acquire()
-      this.value = value
-      release()
+    const release = await this.mutex.acquire();
+    this.value = value;
+    release();
   }
 }
 
 // async mutex-guarded array
 export class AsyncArray<T> extends AsyncVar<Array<T>> {
   constructor(value?: Array<T>) {
-    super(value || [])
+    super(value || []);
   }
 
   // Pushes a new item to the array.
   public async push(value: T): Promise<void> {
-    const arr = await this.get()
-    arr.push(value)
-    await this.set(arr)
+    const arr = await this.get();
+    arr.push(value);
+    await this.set(arr);
   }
 
   // Filter array in-place.
   public async filter(filterFn: (value: T) => boolean): Promise<void> {
-    const arr = await this.get()
-    const filtered = arr.filter(filterFn)
-    await this.set(filtered)
+    const arr = await this.get();
+    const filtered = arr.filter(filterFn);
+    await this.set(filtered);
   }
 
   // Returns true if value is included in the array
   public async includes(value: T): Promise<boolean> {
-    const arr = await this.get()
-    return arr.includes(value)
+    const arr = await this.get();
+    return arr.includes(value);
   }
 
   // Returns length of array
   public async length(): Promise<number> {
-    const arr = await this.get()
-    return arr.length
+    const arr = await this.get();
+    return arr.length;
   }
 }
-

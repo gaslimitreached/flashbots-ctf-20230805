@@ -4,6 +4,7 @@
   "main": "index.js",
   "license": "MIT",
   "scripts": {
+    "data": "for file in ./data/*.json; do cat $file | jq; done",
     "start": "ts-node index"
   },
   "dependencies": {

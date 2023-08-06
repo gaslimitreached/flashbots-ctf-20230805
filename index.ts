@@ -4,7 +4,8 @@ import MevShareClient, { IPendingTransaction } from '@flashbots/mev-share-client
 import { StreamEventType, BundleParams } from '@flashbots/mev-share-client/build/api/interfaces';
 import { Mutex } from 'async-mutex';
 import { AsyncArray } from './async-array';
-import { Contract, JsonRpcProvider, Network, TransactionReceipt, TransactionRequest, Wallet, keccak256 } from 'ethers';
+import { Contract, JsonRpcProvider, Network, TransactionRequest, Wallet } from 'ethers';
+import { writeFileSync } from 'node:fs';
 
 const AUTH_KEY   = process.env.AUTH_KEY   as string;
 const RPC_URL    = process.env.RPC_URL    as string;
@@ -13,7 +14,13 @@ const SIGNER_KEY = process.env.SIGNER_KEY as string;
 const CTF_SIMPLE_ADDRESS = '0x98997b55Bb271e254BEC8B85763480719DaB0E53';
 
 const NUM_TARGET_BLOCKS = 25;
-const REPEATED_BUNDLE_SUBMISSIONS = 3;
+
+// JSON.stringify() doesn't know how to serialize a BigInt
+// https://github.com/GoogleChromeLabs/jsbi/issues/30
+// eslint-disable-next-line @typescript-eslint/no-redeclare
+(BigInt.prototype as any).toJSON = function () {
+  return this.toString();
+};
 
 (async () => {
 
@@ -26,6 +33,8 @@ const REPEATED_BUNDLE_SUBMISSIONS = 3;
   const lock = new Mutex();
 
   const pendingTxHashes = new AsyncArray<string>();
+
+  const feedata = await provider.getFeeData();
 
   let conn: EventSource;
 
@@ -42,7 +51,7 @@ const REPEATED_BUNDLE_SUBMISSIONS = 3;
 
       // isolate the target contract
       if (!address || address.toLowerCase() !== CTF_SIMPLE_ADDRESS.toLowerCase()) return;
-      
+
       const abi = ['function claimReward() external'];
 
       const contract = new Contract(address, abi , provider)
@@ -54,120 +63,68 @@ const REPEATED_BUNDLE_SUBMISSIONS = 3;
 
       const request = await contract['claimReward'].populateTransaction();
 
-      // Batch send bundles. Originally we sent a single bundle and that never
-      // seems to land. It's likely that we're sending bad parameters in our
-      // bundles but instead of investigating that we're just gonna send more
-      // bad transactions.
-      // TODO: skill issue. like boxing in the dark. I have no idea here.
-      // TODO: extract `populateTransaction` and `bundleParams` helpers.
-      const sendBundle = async (): Promise<string[]> => {
+      const backrun: TransactionRequest = {
+        ...request,
+        type: 2,
+        nonce: await signer.getNonce(),
+        chainId: provider._network.chainId,
+        value: 0,
+        gasLimit: 42_000,
+        maxFeePerGas: feedata.maxFeePerGas +  pendingTx.mevGasPrice,
+        maxPriorityFeePerGas: pendingTx.mevGasPrice,
+      }
 
-        const bundles = [];
+      const target = await provider.getBlockNumber();
 
-        for (let i = 0; i < REPEATED_BUNDLE_SUBMISSIONS; i++) {
-          const targetBlock = await provider.getBlockNumber();
-
-          // Using `ethers#Contract` reference to populate transaction devices
-          // the `to` and `data` portions of the `TransactionRequest` so we need
-          // to populate it with the rest of the parameters ourselves.
-          // TODO: `new NonceManager().populateTransaction()` blows up.
-          const claimRewardRequest: TransactionRequest = {
-            ...request,
-            type: 2,
-            // TODO: there has to be a better way to do this
-            nonce: await signer.getNonce() + i,
-            chainId: provider._network.chainId,
-            value: 0,
-            gasLimit: 4000,
-            maxFeePerGas: BigInt(69),
-            maxPriorityFeePerGas: BigInt(5),
+      // build bundle
+      const params: BundleParams = {
+        body: [
+          pendingTx,
+          {
+            tx: await signer.signTransaction(backrun),
+            canRevert: false
           }
-
-          // Set bundle parameters and sign transaction
-          const params: BundleParams = {
-            body: [
-              { hash: pendingTx.hash },
-              {
-                tx: await signer.signTransaction(claimRewardRequest),
-                canRevert: false
-              }
-            ],
-            inclusion: {
-              block: targetBlock + i,
-              maxBlock: targetBlock + NUM_TARGET_BLOCKS - i,
-            }
-          }
-
-          const submission = await client.sendBundle(params);
-
-          console.log(submission.bundleHash, params.inclusion.block, 'bundled' ,'\n');
-
-          bundles.push(keccak256((params.body[1] as any).tx));
-
+        ],
+        inclusion: {
+          block: target,
+          maxBlock: target + NUM_TARGET_BLOCKS,
         }
-
-        return bundles;
       }
 
       // watch future blocks to see if target transaction has ever makes it to the ledger.
       const targetBlock = await provider.getBlockNumber();
 
       for (let i = 0; i < NUM_TARGET_BLOCKS; i++) {
-
         const current = targetBlock + i;
-        
+
         if (!lock.isLocked()) {
           // mutex was released by another handler; bail.
           break
         }
-
         console.log(`${pendingTx.hash} ${current} waiting\n`);
-
-        // sends (n) bundles to the relay
-        // TODO: Determine if transaction has been built properly
-        const bundles = await sendBundle();
 
         // stall until target block is available
         while (await provider.getBlockNumber() < current) {
-          await new Promise(resolve => setTimeout(resolve, 6_000))
+          await new Promise(resolve => setTimeout(resolve, 6_000));
         }
 
-        // check for receipts to bundles and original transaction hash
-        // bail if any and assume we did not hit.
-        // TODO: await Promise.all() a map of these but no dice. tis ugly.
-        //   ```
-        //   const receipts = await Promise.all([pendingTx.hash, ...bundles]
-        //     .map((txHash) => provider.getTransactionReceipt(txHash)));
-        //   ```
-        //   throws not able to find provider
-        const receipts = [];
-        receipts.push(await provider.getTransactionReceipt(pendingTx.hash))
-        // TODO: investigate better way to bacth call? 
-        receipts.push(await provider.getTransactionReceipt(bundles[0]))
-        receipts.push(await provider.getTransactionReceipt(bundles[1]))
-        receipts.push(await provider.getTransactionReceipt(bundles[2]))
+        const receipt = await provider.getTransactionReceipt(pendingTx.hash);
 
-        const succeeded = receipts.filter((receipt: TransactionReceipt) => receipt?.status == 1);
+        if (!receipt || receipt.status != 1) continue;
 
-        // log found transactions with block scanner
-        // TODO: move magic string
-        if (succeeded.length) {
-          const msg = succeeded
-            .map(({ hash }: TransactionReceipt): string => `found: https://goerli.etherscan.io/tx/${hash}\n`)
-            .join('\n');
+        // once the original transaction has landed we can simulate our bundle
+        // TODO: simulate the transaction on a fork
+        try {
+          const simBundleResult = await client.simulateBundle(params);
 
-          console.log(msg);
+          console.log`sim:\n${pendingTx}\n${params}\n${simBundleResult}\n`;
 
-          console.log(receipts);
+          writeFileSync(`data/${pendingTx.hash}.json`, JSON.stringify(pendingTx));
 
-          lock.release();
-
-          // in any case the opportunity attached to this transaction is no longer available; bail.
           break;
-
-        } else {
-          // neither the original transaction (logged) nor any of the bundled transactions were found.
-          console.warn(`${pendingTx.hash} ${current} excluded\n`);
+        } catch (err: unknown) {
+          console.log((err as Error).message);
+          lock.release();
         }
 
       }
@@ -176,20 +133,12 @@ const REPEATED_BUNDLE_SUBMISSIONS = 3;
       await pendingTxHashes.filter(hash => hash !== pendingTx.hash);
 
       console.log(`${pendingTx.hash} dropped\n`);
-
     });
 
     await lock.acquire();
 
   } catch (error: unknown) {
-
     console.log((error as Error).message);
-
-    // TODO: look for a drain when time permits
-    lock.release();
-
     conn?.close();
-
   }
-
 })()

@@ -1,4 +1,4 @@
-# Ethereum Transaction Watcher
+# MevShare Transaction Watcher
 
 This project contains a script that listens to pending transactions on the Ethereum Goerli testnet. When a transaction event occurs, the corresponding transaction hash is logged to the console, and when the transaction is dropped, a message is printed indicating that it has been dropped.
 

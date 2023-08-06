@@ -4,21 +4,19 @@ import { readFileSync } from 'node:fs';
 
 import MevShareClient, { IPendingTransaction } from '@flashbots/mev-share-client';
 import { BundleParams } from '@flashbots/mev-share-client/build/api/interfaces';
-import { Contract, JsonRpcProvider, Network, TransactionReceipt, TransactionRequest, Wallet } from 'ethers';
+import { Contract, Interface, JsonRpcProvider, Network, TransactionReceipt, TransactionRequest, Wallet } from 'ethers';
 
 const AUTH_KEY   = process.env.AUTH_KEY   as string;
 const RPC_URL    = process.env.RPC_URL    as string;
 const SIGNER_KEY = process.env.SIGNER_KEY as string;
 
-const NUM_TARGET_BLOCKS = 25;
-
 async function simulateBundle(client: MevShareClient, params: BundleParams, blockNumber?: number) {
   return client.simulateBundle(params, { blockNumber });
 }
 
-const abi = ['function claimReward() external'];
 (async () => {
 
+  const abi = readFileSync('./bindings/abi.txt').toString();
   const provider   = new JsonRpcProvider(RPC_URL, new Network('goerli', 5));
   const authSigner = new Wallet(AUTH_KEY).connect(provider);
   const signer     = new Wallet(SIGNER_KEY).connect(provider);
@@ -45,9 +43,9 @@ const abi = ['function claimReward() external'];
 
     const [{ address }] = (pendingTx.logs ?? [{}]);
 
-    const contract = new Contract(address, abi , provider);
+    const contract = new Contract(address, abi, provider);
 
-    const request = await contract['claimReward'].populateTransaction();
+    const request = contract['claimReward'].populateTransaction();
 
     const feedata = await provider.getFeeData();
 
@@ -57,32 +55,35 @@ const abi = ['function claimReward() external'];
       nonce: await signer.getNonce(),
       chainId: provider._network.chainId,
       value: 0,
-      gasLimit: 42_000,
+      gasLimit: 60_000,
       maxFeePerGas: feedata.maxFeePerGas +  pendingTx.mevGasPrice,
       maxPriorityFeePerGas: pendingTx.mevGasPrice,
     }
 
     const inclusion = {
-      block: parseInt(blockNumber) || await provider.getBlockNumber(),
+      block: 9473523,
     }
 
     const params: BundleParams = {
       body: [
-        pendingTx,
+        {
+          ...pendingTx,
+          to: address,
+        } as IPendingTransaction,
         {
           tx: await signer.connect(provider).signTransaction(backrun),
           canRevert: false
         }
       ],
-      inclusion: {
-        ...inclusion,
-        maxBlock: inclusion.block + NUM_TARGET_BLOCKS,
-      }
+      inclusion,
     }
 
-    await simulateBundle(client, params, parseInt(blockNumber) || undefined);
+    const result = await simulateBundle(client, params, 9473523);
 
-    throw new Error('Not Implemented');
+    console.log(pendingTx);
+    console.log(backrun);
+    console.log(params);
+    console.log(result);
 
   } catch (error: unknown) {
     console.log((error as Error).message);

@@ -32,7 +32,7 @@ Make sure to include all the necessary dependencies, such as ethers, @flashbots/
 
 The script uses environment variables for authentication and RPC URL configuration. You will need to provide values for the following variables:
 
-- `AUTH_KEY`: Your Ethereum private key.
+- `AUTH_KEY`: Your FlashBots Reputation key.
 - `RPC_URL`: The RPC URL of the Goerli testnet.
 
 You can create a .env file in the project root and add these variables with your values:

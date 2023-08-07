@@ -4,6 +4,8 @@
   "main": "index.js",
   "license": "MIT",
   "scripts": {
+    "bundles": "cat data/bundles/*.json | jq",
+    "data": "cat data/*.json | jq",
     "start": "ts-node index"
   },
   "dependencies": {
